@@ -83,32 +83,38 @@ if not df.empty:
     
     st.dataframe(group_df[['股票', '代號', '最新股價', '漲跌幅(%)', '成交量(股)']], use_container_width=True, hide_index=True)
     
-    st.write("### 📈 3. 點擊個股查看即時走勢")
-    cols = st.columns(len(group_df))
+    st.write("### 📈 3. 族群個股即時 K 線 (自動展開)")
+    
+    # 為了版面美觀，設定每排顯示 3 檔股票的 K 線
+    num_cols = 3
+    cols = st.columns(num_cols)
     
     for idx, row in group_df.reset_index().iterrows():
         ticker = row['代號']
         stock_name = row['股票']
         
-        with cols[idx]:
-            with st.popover(f"🔍 {stock_name}"):
-                st.write(f"**{stock_name} 近一個月走勢**")
-                
-                # 這裡單獨抓取點擊股票的 K 線，節省首頁載入資源
-                stock_data = yf.download(ticker, period="1mo", interval="1d", progress=False)
-                if not stock_data.empty:
-                    fig_k = go.Figure(data=[go.Candlestick(
-                        x=stock_data.index,
-                        open=stock_data['Open'].squeeze(),
-                        high=stock_data['High'].squeeze(),
-                        low=stock_data['Low'].squeeze(),
-                        close=stock_data['Close'].squeeze()
-                    )])
-                    fig_k.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0), xaxis_rangeslider_visible=False)
-                    st.plotly_chart(fig_k, use_container_width=True)
-                
-                raw_code = ticker.split('.')[0]
-                yahoo_url = f"https://tw.stock.yahoo.com/quote/{raw_code}/technical-analysis"
-                st.link_button("🌐 開啟 Yahoo 完整 K 線", yahoo_url)
+        # 利用餘數運算，自動將股票分配到 3 個欄位中
+        col_idx = idx % num_cols
+        with cols[col_idx]:
+            st.markdown(f"**{stock_name} ({ticker})**")
+            
+            # 自動抓取並繪製 K 線圖
+            stock_data = yf.download(ticker, period="1mo", interval="1d", progress=False)
+            if not stock_data.empty:
+                fig_k = go.Figure(data=[go.Candlestick(
+                    x=stock_data.index,
+                    open=stock_data['Open'].squeeze(),
+                    high=stock_data['High'].squeeze(),
+                    low=stock_data['Low'].squeeze(),
+                    close=stock_data['Close'].squeeze()
+                )])
+                fig_k.update_layout(height=250, margin=dict(l=0, r=0, t=10, b=0), xaxis_rangeslider_visible=False)
+                st.plotly_chart(fig_k, use_container_width=True)
+            
+            raw_code = ticker.split('.')[0]
+            yahoo_url = f"https://tw.stock.yahoo.com/quote/{raw_code}/technical-analysis"
+            st.link_button(f"🌐 Yahoo 完整線圖", yahoo_url)
+            
+            st.write("---") # 加上底部分隔線讓排版更俐落
 else:
     st.error("目前無法獲取數據，請稍後再試。")
