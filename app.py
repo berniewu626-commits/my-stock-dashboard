@@ -3,54 +3,75 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
 
 st.set_page_config(page_title="台股產業資金流向儀表板", layout="wide")
-st.title("🔥 產業冷熱與強勢股即時追蹤")
+st.title("🔥 台股產業冷熱與強勢股即時追蹤")
 
-# 建立專屬關注清單
+# 1. 擴充版台股大族群字典 (可自行往下無限新增)
 industry_dict = {
-    "半導體與晶圓代工": {"2303.TW": "聯電", "6836.TWO": "華景電"},
-    "通訊網路與矽光子": {"3105.TWO": "穩懋", "3081.TWO": "聯亞", "3363.TW": "上詮"},
-    "光電與被動元件": {"2489.TW": "瑞軒", "2327.TW": "國巨", "2492.TW": "華新科"}
+    "半導體與晶圓代工": {"2330.TW": "台積電", "2303.TW": "聯電", "5347.TWO": "世界", "6770.TW": "力積電"},
+    "半導體設備與耗材": {"3131.TWO": "弘塑", "3583.TW": "辛耘", "6187.TWO": "萬潤", "6836.TWO": "華景電", "3680.TW": "家登"},
+    "通訊網路與矽光子": {"3105.TWO": "穩懋", "3081.TWO": "聯亞", "3363.TW": "上詮", "3163.TWO": "波若威", "4979.TW": "華星光"},
+    "光電與被動元件": {"2489.TW": "瑞軒", "2327.TW": "國巨", "2492.TW": "華新科", "3026.TW": "禾伸堂", "2428.TW": "興勤"},
+    "AI 伺服器與代工": {"2382.TW": "廣達", "3231.TW": "緯創", "2376.TW": "技嘉", "2356.TW": "英業達", "3232.TW": "智易"},
+    "重電與綠能": {"1503.TW": "士電", "1504.TW": "東元", "1513.TW": "中興電", "1514.TW": "亞力", "1519.TW": "華城"},
+    "散熱族群": {"3017.TW": "奇鋐", "3324.TW": "雙鴻", "2421.TW": "建準", "3653.TW": "健策"},
+    "機器人與智動化": {"2359.TW": "所羅門", "2365.TW": "昆盈", "2373.TW": "震旦行", "6188.TWO": "廣明"},
+    "航運與散裝": {"2603.TW": "長榮", "2609.TW": "陽明", "2615.TW": "萬海", "2618.TW": "長榮航", "2606.TW": "裕民"}
 }
 
-# 抓取即時數據的函數
-@st.cache_data(ttl=300) # 每 5 分鐘快取一次，避免 API 抓太多次被鎖
-def fetch_stock_data():
-    all_data = []
-    for group, stocks in industry_dict.items():
-        for ticker, name in stocks.items():
-            try:
-                stock = yf.Ticker(ticker)
-                hist = stock.history(period="2d")
-                if len(hist) >= 2:
-                    close_today = hist['Close'].iloc[-1]
-                    close_yest = hist['Close'].iloc[-2]
-                    vol_today = hist['Volume'].iloc[-1]
-                    pct_change = ((close_today - close_yest) / close_yest) * 100
-                    
-                    all_data.append({
-                        "族群": group,
-                        "股票": name,
-                        "代號": ticker,
-                        "最新股價": round(close_today, 2),
-                        "漲跌幅(%)": round(pct_change, 2),
-                        "成交量(股)": vol_today
-                    })
-            except Exception:
-                pass
-    return pd.DataFrame(all_data)
+# 建立反向查詢字典，方便後續對應資料
+ticker_info = {}
+for group, stocks in industry_dict.items():
+    for ticker, name in stocks.items():
+        ticker_info[ticker] = {"name": name, "group": group}
 
-st.write("正在從 Yahoo Finance 獲取最新市場數據...")
-df = fetch_stock_data()
+# 2. 改用整批下載 (Batch Download) 解決速度問題
+@st.cache_data(ttl=300)
+def fetch_batch_data():
+    all_tickers = list(ticker_info.keys())
+    # 一次性向 Yahoo 抓取所有股票，大幅提升效能
+    data = yf.download(all_tickers, period="2d", progress=False)
+    
+    results = []
+    if not data.empty:
+        closes = data['Close']
+        volumes = data['Volume']
+        
+        for ticker in all_tickers:
+            try:
+                close_today = closes[ticker].iloc[-1]
+                close_yest = closes[ticker].iloc[-2]
+                vol_today = volumes[ticker].iloc[-1]
+                
+                # 排除無交易資料的項目
+                if pd.isna(close_today) or pd.isna(close_yest):
+                    continue
+                    
+                pct_change = ((close_today - close_yest) / close_yest) * 100
+                
+                results.append({
+                    "族群": ticker_info[ticker]["group"],
+                    "股票": ticker_info[ticker]["name"],
+                    "代號": ticker,
+                    "最新股價": round(float(close_today), 2),
+                    "漲跌幅(%)": round(float(pct_change), 2),
+                    "成交量(股)": int(vol_today)
+                })
+            except Exception:
+                continue
+    return pd.DataFrame(results)
+
+st.write("正在從 Yahoo Finance 整批獲取最新市場數據 (約需 3~5 秒)...")
+df = fetch_batch_data()
 
 if not df.empty:
     st.subheader("📊 1. 產業熱力圖 (區塊大小 = 成交量，顏色 = 漲跌幅)")
     fig_treemap = px.treemap(
         df, path=['族群', '股票'], values='成交量(股)', color='漲跌幅(%)',
         color_continuous_scale=['#00ff00', 'white', '#ff0000'],
-        color_continuous_midpoint=0
+        color_continuous_midpoint=0,
+        hover_data=['最新股價']
     )
     fig_treemap.update_layout(margin=dict(t=10, l=10, r=10, b=10))
     st.plotly_chart(fig_treemap, use_container_width=True)
@@ -70,10 +91,10 @@ if not df.empty:
         stock_name = row['股票']
         
         with cols[idx]:
-            with st.popover(f"🔍 {stock_name} K線"):
+            with st.popover(f"🔍 {stock_name}"):
                 st.write(f"**{stock_name} 近一個月走勢**")
                 
-                # 繪製 K 線圖
+                # 這裡單獨抓取點擊股票的 K 線，節省首頁載入資源
                 stock_data = yf.download(ticker, period="1mo", interval="1d", progress=False)
                 if not stock_data.empty:
                     fig_k = go.Figure(data=[go.Candlestick(
