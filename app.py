@@ -3,11 +3,40 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="台股產業資金流向儀表板", layout="wide")
-st.title("🔥 台股產業冷熱與強勢股即時追蹤")
+# 設定網頁標題與寬版
+st.set_page_config(page_title="暗黑風台股產業資金儀表板", layout="wide")
 
-# 1. 擴充版台股大族群字典 (可自行往下無限新增)
+# ==========================================
+# 需求 1：深色/暗黑背景與白色字體 (CSS 注入)
+# ==========================================
+st.markdown("""
+    <style>
+    /* 全域暗黑背景與文字顏色 */
+    .stApp {
+        background-color: #121212;
+        color: #E0E0E0;
+    }
+    /* 下拉選單與輸入框暗色風格 */
+    div[data-baseweb="select"] > div {
+        background-color: #1E1E1E !important;
+        color: #FFFFFF !important;
+        border-color: #333333 !important;
+    }
+    /* 卡片與容器樣式 */
+    .stMetric {
+        background-color: #1E1E1E;
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid #333333;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("🖤 台股產業資金流向與強勢股戰情室")
+
+# 1. 擴充版產業字典
 industry_dict = {
     "半導體與晶圓代工": {"2330.TW": "台積電", "2303.TW": "聯電", "5347.TWO": "世界", "6770.TW": "力積電"},
     "半導體設備與耗材": {"3131.TWO": "弘塑", "3583.TW": "辛耘", "6187.TWO": "萬潤", "6836.TWO": "華景電", "3680.TW": "家登"},
@@ -20,101 +49,85 @@ industry_dict = {
     "航運與散裝": {"2603.TW": "長榮", "2609.TW": "陽明", "2615.TW": "萬海", "2618.TW": "長榮航", "2606.TW": "裕民"}
 }
 
-# 建立反向查詢字典，方便後續對應資料
 ticker_info = {}
 for group, stocks in industry_dict.items():
     for ticker, name in stocks.items():
         ticker_info[ticker] = {"name": name, "group": group}
 
-# 2. 改用整批下載 (Batch Download) 解決速度問題
+# ==========================================
+# 需求 5：每日歷史資料庫查閱 (從 2026/01/01 起)
+# ==========================================
+st.sidebar.header("📅 歷史數據查詢庫")
+start_of_year = datetime(2026, 1, 1).date()
+today = datetime.now().date()
+
+selected_date = st.sidebar.date_input(
+    "選擇要調閱的交易日期",
+    value=today,
+    min_value=start_of_year,
+    max_value=today
+)
+
 @st.cache_data(ttl=300)
-def fetch_batch_data():
+def fetch_data_by_date(target_date):
     all_tickers = list(ticker_info.keys())
-    # 一次性向 Yahoo 抓取所有股票，大幅提升效能
-    data = yf.download(all_tickers, period="2d", progress=False)
+    # 多抓 5 天以防遇到假日
+    start_str = (target_date - timedelta(days=7)).strftime('%Y-%m-%d')
+    end_str = (target_date + timedelta(days=1)).strftime('%Y-%m-%d')
+    
+    data = yf.download(all_tickers, start=start_str, end=end_str, progress=False)
     
     results = []
     if not data.empty:
         closes = data['Close']
         volumes = data['Volume']
         
-        for ticker in all_tickers:
-            try:
-                close_today = closes[ticker].iloc[-1]
-                close_yest = closes[ticker].iloc[-2]
-                vol_today = volumes[ticker].iloc[-1]
-                
-                # 排除無交易資料的項目
-                if pd.isna(close_today) or pd.isna(close_yest):
-                    continue
+        # 篩選出不大於 target_date 的最新交易日
+        valid_dates = [d for d in closes.index if d.date() <= target_date]
+        if len(valid_dates) >= 2:
+            t_day = valid_dates[-1]
+            y_day = valid_dates[-2]
+            
+            for ticker in all_tickers:
+                try:
+                    c_today = closes[ticker].loc[t_day]
+                    c_yest = closes[ticker].loc[y_day]
+                    v_today = volumes[ticker].loc[t_day]
                     
-                pct_change = ((close_today - close_yest) / close_yest) * 100
-                
-                results.append({
-                    "族群": ticker_info[ticker]["group"],
-                    "股票": ticker_info[ticker]["name"],
-                    "代號": ticker,
-                    "最新股價": round(float(close_today), 2),
-                    "漲跌幅(%)": round(float(pct_change), 2),
-                    "成交量(股)": int(vol_today)
-                })
-            except Exception:
-                continue
+                    if pd.isna(c_today) or pd.isna(c_yest):
+                        continue
+                        
+                    pct_change = ((c_today - c_yest) / c_yest) * 100
+                    
+                    results.append({
+                        "族群": ticker_info[ticker]["group"],
+                        "股票": ticker_info[ticker]["name"],
+                        "代號": ticker,
+                        "最新股價": round(float(c_today), 2),
+                        "漲跌幅(%)": round(float(pct_change), 2),
+                        "成交量(股)": int(v_today)
+                    })
+                except Exception:
+                    continue
     return pd.DataFrame(results)
 
-st.write("正在從 Yahoo Finance 整批獲取最新市場數據 (約需 3~5 秒)...")
-df = fetch_batch_data()
+df = fetch_data_by_date(selected_date)
 
 if not df.empty:
-    st.subheader("📊 1. 產業熱力圖 (區塊大小 = 成交量，顏色 = 漲跌幅)")
-    fig_treemap = px.treemap(
-        df, path=['族群', '股票'], values='成交量(股)', color='漲跌幅(%)',
-        color_continuous_scale=['#00ff00', 'white', '#ff0000'],
-        color_continuous_midpoint=0,
-        hover_data=['最新股價']
-    )
-    fig_treemap.update_layout(margin=dict(t=10, l=10, r=10, b=10))
-    st.plotly_chart(fig_treemap, use_container_width=True)
+    # 顯示目前查閱的日期
+    st.info(f"📆 目前顯示資料時間：**{selected_date.strftime('%Y-%m-%d')}**")
+
+    # ==========================================
+    # 需求 4：今日觀察股票候選 (自動選出強勢個股)
+    # ==========================================
+    st.subheader("⚡ 強勢個股觀察雷達 (當日漲幅 > 2.5% 精選)")
+    strong_stocks = df[df['漲跌幅(%)'] >= 2.5].sort_values(by="漲跌幅(%)", ascending=False)
     
-    st.divider()
-    
-    selected_group = st.selectbox("🎯 2. 選擇你要深入看盤的族群：", df['族群'].unique())
-    group_df = df[df['族群'] == selected_group].sort_values(by="漲跌幅(%)", ascending=False)
-    
-    st.dataframe(group_df[['股票', '代號', '最新股價', '漲跌幅(%)', '成交量(股)']], use_container_width=True, hide_index=True)
-    
-    st.write("### 📈 3. 族群個股即時 K 線 (自動展開)")
-    
-    # 為了版面美觀，設定每排顯示 3 檔股票的 K 線
-    num_cols = 3
-    cols = st.columns(num_cols)
-    
-    for idx, row in group_df.reset_index().iterrows():
-        ticker = row['代號']
-        stock_name = row['股票']
-        
-        # 利用餘數運算，自動將股票分配到 3 個欄位中
-        col_idx = idx % num_cols
-        with cols[col_idx]:
-            st.markdown(f"**{stock_name} ({ticker})**")
-            
-            # 自動抓取並繪製 K 線圖
-            stock_data = yf.download(ticker, period="1mo", interval="1d", progress=False)
-            if not stock_data.empty:
-                fig_k = go.Figure(data=[go.Candlestick(
-                    x=stock_data.index,
-                    open=stock_data['Open'].squeeze(),
-                    high=stock_data['High'].squeeze(),
-                    low=stock_data['Low'].squeeze(),
-                    close=stock_data['Close'].squeeze()
-                )])
-                fig_k.update_layout(height=250, margin=dict(l=0, r=0, t=10, b=0), xaxis_rangeslider_visible=False)
-                st.plotly_chart(fig_k, use_container_width=True)
-            
-            raw_code = ticker.split('.')[0]
-            yahoo_url = f"https://tw.stock.yahoo.com/quote/{raw_code}/technical-analysis"
-            st.link_button(f"🌐 Yahoo 完整線圖", yahoo_url)
-            
-            st.write("---") # 加上底部分隔線讓排版更俐落
-else:
-    st.error("目前無法獲取數據，請稍後再試。")
+    if not strong_stocks.empty:
+        st.dataframe(
+            strong_stocks[['族群', '股票', '代號', '最新股價', '漲跌幅(%)', '成交量(股)']],
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.caption("該交易日暫無漲幅 > 2.5% 的
