@@ -5,6 +5,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
+from trading_dates import (
+    calendar_sessions, date_notices, download_snapshot,
+    normalize_daily_data, taipei_now,
+)
+
 st.set_page_config(page_title="暗黑風台股戰情室", layout="wide")
 
 st.markdown("""
@@ -50,58 +55,50 @@ industry_dict = {
 
 ticker_map = {t: {"name": n, "group": g} for g, s in industry_dict.items() for t, n in s.items()}
 
+today_tw = taipei_now().date()
 st.sidebar.header("📅 歷史查詢")
 selected_date = st.sidebar.date_input(
-    "交易日期", 
-    value=datetime.now().date(), 
+    "查詢日期（台灣時間）", 
+    value=today_tw, 
     min_value=datetime(2026, 1, 1).date(), 
-    max_value=datetime.now().date()
+    max_value=today_tw
 )
 
 @st.cache_data(ttl=300)
 def get_data(target_date):
-    tickers = list(ticker_map.keys())
-    s_date = target_date - timedelta(days=7)
-    e_date = target_date + timedelta(days=1)
-    
-    df_raw = yf.download(tickers, start=s_date.strftime('%Y-%m-%d'), end=e_date.strftime('%Y-%m-%d'), progress=False)
-    res = []
-    
-    if not df_raw.empty and 'Close' in df_raw:
-        closes = df_raw['Close']
-        vols = df_raw['Volume']
-        valid_dates = [d for d in closes.index if d.date() <= target_date]
-        
-        if len(valid_dates) >= 2:
-            t_day = valid_dates[-1]
-            y_day = valid_dates[-2]
-            
-            for t in tickers:
-                try:
-                    c1 = float(closes[t].loc[t_day])
-                    c0 = float(closes[t].loc[y_day])
-                    v = int(vols[t].loc[t_day])
-                    
-                    if not (pd.isna(c1) or pd.isna(c0)):
-                        pct = round(((c1 - c0) / c0) * 100, 2)
-                        res.append({
-                            "族群": ticker_map[t]["group"], 
-                            "股票": ticker_map[t]["name"], 
-                            "代號": t, 
-                            "最新股價": round(c1, 2), 
-                            "漲跌幅(%)": pct, 
-                            "成交量": v
-                        })
-                except Exception:
-                    pass
-    return pd.DataFrame(res)
+    return download_snapshot(target_date, ticker_map, yf.download)
 
-st.write("正在獲取 28 大族群資料，請稍候 3~5 秒...")
-df = get_data(selected_date)
+
+if st.sidebar.button("🔄 重新整理資料"):
+    get_data.clear(selected_date)
+st.sidebar.caption("報價快取最多 5 分鐘；重新整理可立即重抓。")
+
+st.write("正在獲取 28 大族群資料，請稍候...")
+st.caption(f"📆 查詢日期：{selected_date:%Y-%m-%d}（Asia/Taipei）")
+try:
+    df, data_info = get_data(selected_date)
+except Exception:
+    st.error("行情下載失敗，無法判斷是否休市；請稍後按「重新整理資料」重試。")
+    st.stop()
+
+actual_date = data_info["actual_date"]
+previous_date = data_info["previous_date"]
+actual_label = actual_date.isoformat() if actual_date else "無可用資料"
+previous_label = previous_date.isoformat() if previous_date else "不足兩個資料日"
+st.caption(f"📊 實際資料日期：{actual_label} ｜ 漲跌比較基準日：{previous_label}")
+st.caption(f"取得時間：{data_info['fetched_at']:%Y-%m-%d %H:%M:%S}（台灣時間，非行情更新時間）｜來源：Yahoo 日線，非即時行情")
+for level, message in date_notices(
+    selected_date, actual_date, previous_date, taipei_now(),
+    calendar_sessions(selected_date.year),
+):
+    getattr(st, level)(message)
+
+if data_info["excluded"]:
+    st.warning(f"{len(data_info['excluded'])}/{len(ticker_map)} 檔缺少共同資料日的有效價格或成交量，已排除，未混用舊資料。族群排行與熱力圖可能不完整。")
+    with st.expander("查看未納入的股票"):
+        st.write("、".join(data_info["excluded"]))
 
 if not df.empty:
-    st.caption(f"📆 查詢日期：{selected_date.strftime('%Y-%m-%d')}")
-    
     st.subheader("⚡ 強勢股雷達 (漲幅 > 2.5%)")
     strong = df[df['漲跌幅(%)'] >= 2.5].sort_values(by="漲跌幅(%)", ascending=False)
     
@@ -142,26 +139,39 @@ if not df.empty:
         with cols[idx % 3]:
             st.markdown(f"**{row['股票']} ({row['代號']})**")
             
-            k_start = selected_date - timedelta(days=40)
-            k_end = selected_date + timedelta(days=1)
-            k_df = yf.download(row['代號'], start=k_start.strftime('%Y-%m-%d'), end=k_end.strftime('%Y-%m-%d'), progress=False)
+            k_start = actual_date - timedelta(days=40)
+            k_end = actual_date + timedelta(days=1)
+            try:
+                k_df = yf.download(row['代號'], start=k_start.strftime('%Y-%m-%d'), end=k_end.strftime('%Y-%m-%d'), interval="1d", auto_adjust=True, progress=False)
+                k_df = normalize_daily_data(k_df, actual_date)
+                if isinstance(k_df.columns, pd.MultiIndex):
+                    k_df.columns = k_df.columns.get_level_values(0)
+            except Exception:
+                k_df = pd.DataFrame()
+            if k_df.empty:
+                st.caption("K 線暫無可用資料，請稍後重試。")
+            else:
+                st.caption(f"K 線資料截至 {k_df.index[-1]:%Y-%m-%d}")
+                if k_df.index[-1].date() < actual_date:
+                    st.warning("K 線尚未更新至上方行情資料日。")
             
             if not k_df.empty:
                 fig_k = go.Figure(data=[go.Candlestick(
                     x=k_df.index, 
-                    open=k_df['Open'].squeeze(), 
-                    high=k_df['High'].squeeze(), 
-                    low=k_df['Low'].squeeze(), 
-                    close=k_df['Close'].squeeze()
+                    open=k_df['Open'], 
+                    high=k_df['High'], 
+                    low=k_df['Low'], 
+                    close=k_df['Close']
                 )])
                 fig_k.update_layout(
                     height=220, margin=dict(l=0, r=0, t=10, b=0), 
                     xaxis_rangeslider_visible=False, template="plotly_dark", 
                     paper_bgcolor="#121212", plot_bgcolor="#121212"
                 )
-                st.plotly_chart(fig_k, use_container_width=True)
+                st.plotly_chart(fig_k, use_container_width=True, key=f"kline-{row['代號']}")
                 
             code = row['代號'].split('.')[0]
             st.link_button("🌐 Yahoo K線", f"https://tw.stock.yahoo.com/quote/{code}/technical-analysis")
 else:
-    st.error("該日期無數據，請切換至其他交易日。")
+    st.error(f"回查 {data_info['lookback_days']} 天後，仍無法取得共同兩個資料日的有效價格及成交量；未計算漲跌幅。請重新整理或改選日期。")
+
