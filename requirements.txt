@@ -2,3 +2,5 @@ streamlit
 yfinance
 pandas
 plotly
+exchange-calendars>=4.13.2,<5
+tzdata
