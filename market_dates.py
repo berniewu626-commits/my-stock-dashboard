@@ -1,6 +1,6 @@
 """台股日線日期判斷（以台灣時間及資料來源實際可用日期為準）。"""
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -43,6 +43,9 @@ def data_date_notice(query_date, actual_date, now):
     if actual_date < query_date:
         actual = actual_date.isoformat()
         if query_date.weekday() >= 5:
+            previous_friday = query_date - timedelta(days=query_date.weekday() - 4)
+            if actual_date < previous_friday:
+                return ("warning", f"查詢日為週末，已回溯至 {actual}；該日期早於一般週五交易日，可能遇到連假休市或資料來源延遲。")
             return ("info", f"查詢日為週末非交易日，已自動回溯至 {actual} 的可用日線資料。")
         if query_date == today and local_now.time() < DAILY_DATA_CAUTION_BEFORE:
             return ("warning", f"今日日線可能尚未更新或定稿，目前顯示最近可用交易日 {actual}；請稍後再查看。")
