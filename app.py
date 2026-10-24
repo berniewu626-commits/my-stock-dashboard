@@ -4,6 +4,7 @@ import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from market_dates import taiwan_now, taiwan_date, last_two_sessions, data_date_notice
 
 st.set_page_config(page_title="暗黑風台股戰情室", layout="wide")
 
@@ -51,30 +52,31 @@ industry_dict = {
 ticker_map = {t: {"name": n, "group": g} for g, s in industry_dict.items() for t, n in s.items()}
 
 st.sidebar.header("📅 歷史查詢")
+local_today = taiwan_now().date()
 selected_date = st.sidebar.date_input(
     "交易日期", 
-    value=datetime.now().date(), 
+    value=local_today, 
     min_value=datetime(2026, 1, 1).date(), 
-    max_value=datetime.now().date()
+    max_value=local_today
 )
 
 @st.cache_data(ttl=300)
 def get_data(target_date):
     tickers = list(ticker_map.keys())
-    s_date = target_date - timedelta(days=7)
+    # 涵蓋連續假期及可能的來源延遲，優先取得實際可用的兩個交易日。
+    s_date = target_date - timedelta(days=30)
     e_date = target_date + timedelta(days=1)
     
     df_raw = yf.download(tickers, start=s_date.strftime('%Y-%m-%d'), end=e_date.strftime('%Y-%m-%d'), progress=False)
     res = []
-    
+    t_day = y_day = None
+
     if not df_raw.empty and 'Close' in df_raw:
         closes = df_raw['Close']
         vols = df_raw['Volume']
-        valid_dates = [d for d in closes.index if d.date() <= target_date]
-        
-        if len(valid_dates) >= 2:
-            t_day = valid_dates[-1]
-            y_day = valid_dates[-2]
+        t_day, y_day = last_two_sessions(closes, target_date)
+
+        if t_day is not None and y_day is not None:
             
             for t in tickers:
                 try:
@@ -94,13 +96,25 @@ def get_data(target_date):
                         })
                 except Exception:
                     pass
-    return pd.DataFrame(res)
+    actual_date = taiwan_date(t_day) if t_day is not None else None
+    previous_date = taiwan_date(y_day) if y_day is not None else None
+    return pd.DataFrame(res), actual_date, previous_date
 
 st.write("正在獲取 28 大族群資料，請稍候 3~5 秒...")
-df = get_data(selected_date)
+df, actual_date, previous_date = get_data(selected_date)
+
+# 顯示實際取得的兩個交易日，不將非交易日或尚未更新的資料誤標為查詢日。
+actual_label = actual_date.isoformat() if actual_date else "尚未取得"
+previous_label = previous_date.isoformat() if previous_date else "尚未取得"
+st.caption(f"📆 查詢日期：{selected_date:%Y-%m-%d} ｜ 📈 實際資料交易日：{actual_label} ｜ 前一資料交易日：{previous_label}（台灣時間）")
+notice = data_date_notice(selected_date, actual_date, taiwan_now())
+if notice:
+    if notice[0] == "info":
+        st.info(notice[1])
+    else:
+        st.warning(notice[1])
 
 if not df.empty:
-    st.caption(f"📆 查詢日期：{selected_date.strftime('%Y-%m-%d')}")
     
     st.subheader("⚡ 強勢股雷達 (漲幅 > 2.5%)")
     strong = df[df['漲跌幅(%)'] >= 2.5].sort_values(by="漲跌幅(%)", ascending=False)
@@ -142,8 +156,9 @@ if not df.empty:
         with cols[idx % 3]:
             st.markdown(f"**{row['股票']} ({row['代號']})**")
             
-            k_start = selected_date - timedelta(days=40)
-            k_end = selected_date + timedelta(days=1)
+            # K 線與雷達/熱力圖採相同的實際資料交易日為截止基準。
+            k_start = actual_date - timedelta(days=40)
+            k_end = actual_date + timedelta(days=1)
             k_df = yf.download(row['代號'], start=k_start.strftime('%Y-%m-%d'), end=k_end.strftime('%Y-%m-%d'), progress=False)
             
             if not k_df.empty:
