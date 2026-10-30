@@ -4,6 +4,7 @@ import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from watchlist_ui import render_watchlist
 from market_dates import taiwan_now, taiwan_date, last_two_sessions, data_date_notice
 
 st.set_page_config(page_title="暗黑風台股戰情室", layout="wide")
@@ -99,6 +100,9 @@ def get_data(target_date):
     actual_date = taiwan_date(t_day) if t_day is not None else None
     previous_date = taiwan_date(y_day) if y_day is not None else None
     return pd.DataFrame(res), actual_date, previous_date
+
+render_watchlist(selected_date)
+st.divider()
 
 st.write("正在獲取 28 大族群資料，請稍候 3~5 秒...")
 df, actual_date, previous_date = get_data(selected_date)
